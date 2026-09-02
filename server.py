@@ -13,24 +13,30 @@ Usage:
   BOB_PATH=/custom/path/to/bob python3 server.py
 """
 
+import cgi
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote, parse_qs
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent.resolve()
 PUBLIC_DIR  = BASE_DIR / 'public'
 CONFIG_PATH = BASE_DIR / 'config.json'
 
-# ─── In-memory task ID store (chatId → bobTaskId) ─────────────────────────────
-_task_ids: dict = {}  # { chatId: task_id }
-_task_ids_lock = threading.Lock()
+# ─── In-memory stores ─────────────────────────────────────────────────────────
+_task_ids:   dict = {}  # { chatId: task_id }
+_workspaces: dict = {}  # { chatId: Path }
+_store_lock = threading.Lock()
+
+WORKSPACES_DIR = Path('/tmp/chatbob-workspaces')
+WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
 
 file_config: dict = {}
 try:
@@ -72,6 +78,16 @@ MIME = {
 }
 
 # ─── Run bob and stream output as SSE ─────────────────────────────────────────
+def _get_or_create_workspace(chat_id: str) -> Path:
+    """Return (and create if needed) the workspace directory for a chat."""
+    with _store_lock:
+        if chat_id not in _workspaces:
+            ws = WORKSPACES_DIR / chat_id
+            ws.mkdir(parents=True, exist_ok=True)
+            _workspaces[chat_id] = ws
+        return _workspaces[chat_id]
+
+
 def run_bob_streaming(prompt: str, system_prompt: Optional[str], chat_id: Optional[str], wfile, stop_event: threading.Event):
     full_prompt = f'[System: {system_prompt}]\n\n{prompt}' if system_prompt else prompt
 
@@ -84,21 +100,28 @@ def run_bob_streaming(prompt: str, system_prompt: Optional[str], chat_id: Option
     # bob needs HOME to locate its config/auth files
     env.setdefault('HOME', str(Path.home()))
 
+    # Resolve workspace for this chat (created on demand)
+    workspace: Optional[Path] = None
+    if chat_id:
+        workspace = _get_or_create_workspace(chat_id)
+
     # Resolve existing task ID for this chat (enables conversation continuity via -r)
     existing_task_id: Optional[str] = None
     if chat_id:
-        with _task_ids_lock:
+        with _store_lock:
             existing_task_id = _task_ids.get(chat_id)
 
-    resume_flag = f' -r {json.dumps(existing_task_id)}' if existing_task_id else ''
+    workspace_flag = f' -w {json.dumps(str(workspace))}' if workspace else ''
+    resume_flag    = f' -r {json.dumps(existing_task_id)}' if existing_task_id else ''
 
     print(f"\n{'─' * 60}")
-    print(f"[bob →] chatId={chat_id}  taskId={existing_task_id or '(new)'}  prompt: {full_prompt[:200]}{'…' if len(full_prompt) > 200 else ''}")
+    print(f"[bob →] chatId={chat_id}  taskId={existing_task_id or '(new)'}  workspace={workspace}")
+    print(f"[bob →] prompt: {full_prompt[:200]}{'…' if len(full_prompt) > 200 else ''}")
     print('─' * 60)
 
     try:
         process = subprocess.Popen(
-            ['bash', '-c', f'{json.dumps(BOB_PATH)} run -f stream-json{resume_flag} {json.dumps(full_prompt)}'],
+            ['bash', '-c', f'{json.dumps(BOB_PATH)} run -f stream-json{workspace_flag}{resume_flag} {json.dumps(full_prompt)}'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -146,7 +169,7 @@ def run_bob_streaming(prompt: str, system_prompt: Optional[str], chat_id: Option
                     print(f"[bob] status={event.get('status')}  task_id={new_task_id}")
                     # Store the task ID and notify the frontend so subsequent turns resume the conversation
                     if new_task_id and chat_id:
-                        with _task_ids_lock:
+                        with _store_lock:
                             _task_ids[chat_id] = new_task_id
                         taskid_payload = json.dumps({'taskId': new_task_id})
                         try:
@@ -174,7 +197,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _cors_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
 
     def do_OPTIONS(self):
@@ -189,6 +212,66 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == '/api/config':
             bob_found = os.path.isfile(BOB_PATH) and os.access(BOB_PATH, os.X_OK)
             self._json(200, {'configured': bob_found, 'bobPath': BOB_PATH})
+            return
+
+        # GET /api/workspace/<chatId> — list files in the chat workspace
+        if path.startswith('/api/workspace/'):
+            chat_id = unquote(path[len('/api/workspace/'):])
+            if not chat_id:
+                self._json(400, {'error': 'chatId is required'})
+                return
+            with _store_lock:
+                ws = _workspaces.get(chat_id)
+            if not ws:
+                ws = WORKSPACES_DIR / chat_id
+            if not ws.exists():
+                self._json(200, {'files': []})
+                return
+            files = sorted(
+                [{'name': f.name, 'size': f.stat().st_size} for f in ws.iterdir() if f.is_file()],
+                key=lambda x: x['name']
+            )
+            self._json(200, {'files': files})
+            return
+
+        # GET /api/download?chatId=<chatId>&file=<filename> — download a workspace file
+        if path == '/api/download':
+            qs = parse_qs(urlparse(self.path).query)
+            chat_id  = unquote(qs.get('chatId', [''])[0])
+            filename = unquote(qs.get('file',   [''])[0])
+            if not chat_id or not filename:
+                self._json(400, {'error': 'chatId and file are required'})
+                return
+            with _store_lock:
+                ws = _workspaces.get(chat_id)
+            if not ws:
+                ws = WORKSPACES_DIR / chat_id
+            ws = ws.resolve()
+            if not ws.exists():
+                print(f'[download] workspace not found: {ws}')
+                self._json(404, {'error': 'Workspace not found'})
+                return
+            file_path = (ws / filename).resolve()
+            print(f'[download] chatId={chat_id!r}  file={filename!r}  ws={ws}  file_path={file_path}  exists={file_path.exists()}')
+            # Path traversal guard
+            try:
+                file_path.relative_to(ws)
+            except ValueError:
+                self._json(403, {'error': 'Forbidden'})
+                return
+            if not file_path.is_file():
+                self._json(404, {'error': 'File not found'})
+                return
+            data = file_path.read_bytes()
+            mime = MIME.get(file_path.suffix, 'application/octet-stream')
+            safe_name = filename.replace('"', '_')
+            self.send_response(200)
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Content-Disposition', f'attachment; filename="{safe_name}"')
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(data)
             return
 
         # Static files
@@ -250,6 +333,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
             run_bob_streaming(prompt, system_prompt, chat_id, self.wfile, stop_event)
             return
 
+        # POST /api/upload — multipart file upload into the chat's workspace
+        if path == '/api/upload':
+            content_type = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' not in content_type:
+                self._json(400, {'error': 'multipart/form-data required'})
+                return
+            length = int(self.headers.get('Content-Length', 0))
+            # cgi.FieldStorage reads directly from rfile
+            env = {'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': content_type, 'CONTENT_LENGTH': str(length)}
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=env)
+
+            chat_id = form.getvalue('chatId')
+            if not chat_id:
+                self._json(400, {'error': 'chatId is required'})
+                return
+
+            workspace = _get_or_create_workspace(chat_id)
+            saved = []
+            files_field = form['files'] if 'files' in form else []
+            if not isinstance(files_field, list):
+                files_field = [files_field]
+
+            for item in files_field:
+                if not item.filename:
+                    continue
+                # Sanitise filename — strip path components
+                safe_name = Path(item.filename).name
+                dest = workspace / safe_name
+                dest.write_bytes(item.file.read())
+                saved.append(safe_name)
+                print(f'[upload] chatId={chat_id}  file={safe_name}  size={dest.stat().st_size}')
+
+            self._json(200, {'saved': saved, 'workspace': str(workspace)})
+            return
+
         # POST /api/taskid — frontend stores a task ID it learned about
         if path == '/api/taskid':
             length = int(self.headers.get('Content-Length', 0))
@@ -262,7 +380,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cid = parsed.get('chatId')
             tid = parsed.get('taskId')
             if cid and tid:
-                with _task_ids_lock:
+                with _store_lock:
                     _task_ids[cid] = tid
             self._json(200, {'ok': True})
             return
@@ -276,8 +394,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith('/api/taskid/'):
             chat_id = path[len('/api/taskid/'):]
             if chat_id:
-                with _task_ids_lock:
+                with _store_lock:
                     _task_ids.pop(chat_id, None)
+                    ws = _workspaces.pop(chat_id, None)
+                # Remove workspace directory from disk too
+                if ws and ws.exists():
+                    shutil.rmtree(ws, ignore_errors=True)
+                    print(f'[workspace] removed  chatId={chat_id}  path={ws}')
             self._json(200, {'ok': True})
             return
 
