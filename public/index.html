@@ -1001,13 +1001,19 @@ async function uploadPendingFiles(chatId) {
 async function refreshWorkspacePanel(chatId) {
   const panel = document.getElementById('workspace-panel');
   const list  = document.getElementById('workspace-files');
-  if (!chatId) { panel.classList.add('empty'); return; }
+  // Clear immediately so stale files from a previous chat never linger
+  panel.classList.add('empty');
+  list.innerHTML = '';
+  if (!chatId) return;
 
   let files = [];
   try {
     const r = await fetch(`/api/workspace/${chatId}`);
     if (r.ok) ({ files } = await r.json());
   } catch { /* ignore */ }
+
+  // Discard result if the user switched to a different chat while fetching
+  if (chatId !== activeId) return;
 
   if (!files.length) {
     panel.classList.add('empty');
