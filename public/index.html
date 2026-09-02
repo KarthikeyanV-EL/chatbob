@@ -356,8 +356,11 @@
     }
     .msg-content a { color: var(--accent); text-decoration: none; }
     .msg-content a:hover { text-decoration: underline; }
+    .msg-content .table-wrap {
+      overflow-x: auto; margin: 10px 0;
+    }
     .msg-content table {
-      width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px;
+      width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap;
     }
     .msg-content th, .msg-content td {
       padding: 8px 12px;
@@ -841,6 +844,27 @@ function renderMarkdown(text) {
   // Links
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
+  // Tables  (GFM pipe syntax)
+  text = text.replace(
+    /((?:^\|.+\|\n?)+)/gm,
+    (block) => {
+      const rows = block.trim().split('\n').filter(r => r.trim());
+      // Detect and skip the separator row (e.g. |---|:---:|---:|)
+      const dataRows = rows.filter(r => !/^\|[\s\-:|]+\|[\s\-:|]*$/.test(r.trim()));
+      if (dataRows.length < 1) return block;
+      const headerRow = dataRows[0];
+      const bodyRows  = dataRows.slice(1);
+      const parseCells = (row, tag) =>
+        row.trim().replace(/^\||\|$/g, '').split('|')
+          .map(c => `<${tag}>${c.trim()}</${tag}>`).join('');
+      const thead = `<thead><tr>${parseCells(headerRow, 'th')}</tr></thead>`;
+      const tbody = bodyRows.length
+        ? `<tbody>${bodyRows.map(r => `<tr>${parseCells(r, 'td')}</tr>`).join('')}</tbody>`
+        : '';
+      return `<div class="table-wrap"><table>${thead}${tbody}</table></div>`;
+    }
+  );
+
   // Unordered lists
   text = text.replace(/((?:^[ \t]*[-*+]\s+.+\n?)+)/gm, (block) => {
     const items = block.match(/^[ \t]*[-*+]\s+(.+)$/gm) || [];
@@ -861,7 +885,7 @@ function renderMarkdown(text) {
     const trimmed = line.trim();
     if (!trimmed) {
       if (para.length) { out.push(`<p>${para.join(' ')}</p>`); para = []; }
-    } else if (/^<(h[1-6]|ul|ol|pre|blockquote|hr|table)/.test(trimmed) || /^<\/(ul|ol|pre|blockquote)/.test(trimmed)) {
+    } else if (/^<(h[1-6]|ul|ol|pre|blockquote|hr|table|div)/.test(trimmed) || /^<\/(ul|ol|pre|blockquote|div)/.test(trimmed)) {
       if (para.length) { out.push(`<p>${para.join(' ')}</p>`); para = []; }
       out.push(trimmed);
     } else {
