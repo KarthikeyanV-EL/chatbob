@@ -1,0 +1,12 @@
+{
+  "name": "chatbob-ui",
+  "version": "1.0.0",
+  "description": "A ChatGPT-style web interface for IBM Bob",
+  "scripts": {
+    "start": "python3 server.py",
+    "docker:build": "docker build -t chatbob-ui .",
+    "docker:run": "docker run --rm -p 3000:3000 -e BOB_API_KEY=${BOB_API_KEY} chatbob-ui"
+  },
+  "keywords": ["ibm", "bob", "ai", "chat", "llm"],
+  "license": "MIT"
+}
