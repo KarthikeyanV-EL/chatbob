@@ -810,6 +810,21 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// ── Live streaming renderer (markdown with blinking cursor) ───────
+let _rafPending = false;
+function renderStreaming(el, text) {
+  if (_rafPending) return;           // coalesce rapid token bursts into one frame
+  _rafPending = true;
+  requestAnimationFrame(() => {
+    _rafPending = false;
+    // Close any unclosed fenced code block so the renderer doesn't eat the rest
+    const fenceCount = (text.match(/^```/gm) || []).length;
+    const normalized = fenceCount % 2 === 1 ? text + '\n```' : text;
+    el.innerHTML = renderMarkdown(normalized) +
+      '<span class="cursor"></span>';
+  });
+}
+
 // ── Minimal Markdown → HTML renderer ──────────────────────────────
 function renderMarkdown(text) {
   if (!text) return '';
@@ -1287,9 +1302,7 @@ async function sendMessage(userText) {
         const token = parsed.choices?.[0]?.delta?.content || '';
         if (token) {
           assistantContent += token;
-          // Show plain text with cursor while streaming; render markdown only when done
-          contentEl.textContent = assistantContent;
-          contentEl.appendChild(Object.assign(document.createElement('span'), { className: 'cursor' }));
+          renderStreaming(contentEl, assistantContent);
           scrollToBottom();
         }
       }
@@ -1302,6 +1315,7 @@ async function sendMessage(userText) {
     }
   } finally {
     abortCtrl = null;
+    // Final render: no cursor, no unclosed-fence patch
     contentEl.innerHTML = renderMarkdown(assistantContent || '_(no response)_');
     chat.messages.push({ role: 'assistant', content: assistantContent || '_(no response)_' });
     chat.title = inferTitle(chat.messages);
