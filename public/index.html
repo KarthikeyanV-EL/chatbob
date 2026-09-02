@@ -846,18 +846,26 @@ function renderMarkdown(text) {
 
   // Tables  (GFM pipe syntax)
   text = text.replace(
-    /((?:^\|.+\|\n?)+)/gm,
+    /((?:^\|.+\|[ \t]*\n?)+)/gm,
     (block) => {
-      const rows = block.trim().split('\n').filter(r => r.trim());
-      // Detect and skip the separator row (e.g. |---|:---:|---:|)
-      const dataRows = rows.filter(r => !/^\|[\s\-:|]+\|[\s\-:|]*$/.test(r.trim()));
-      if (dataRows.length < 1) return block;
-      const headerRow = dataRows[0];
-      const bodyRows  = dataRows.slice(1);
+      const rows = block.trim().split('\n').map(r => r.trim()).filter(Boolean);
+      if (rows.length < 2) return block;
+
+      // A separator row contains only |, -, :, spaces in each cell
+      const isSep = r => r.replace(/^\||\|$/g, '').split('|').every(c => /^[\s\-:]+$/.test(c));
+
+      // Find separator row index (must be row index 1 for standard GFM)
+      const sepIdx = rows.findIndex(isSep);
+      if (sepIdx < 1) return block; // no valid separator → not a table
+
+      const headerRows = rows.slice(0, sepIdx);
+      const bodyRows   = rows.slice(sepIdx + 1);
+
       const parseCells = (row, tag) =>
-        row.trim().replace(/^\||\|$/g, '').split('|')
+        row.replace(/^\||\|$/g, '').split('|')
           .map(c => `<${tag}>${c.trim()}</${tag}>`).join('');
-      const thead = `<thead><tr>${parseCells(headerRow, 'th')}</tr></thead>`;
+
+      const thead = `<thead>${headerRows.map(r => `<tr>${parseCells(r, 'th')}</tr>`).join('')}</thead>`;
       const tbody = bodyRows.length
         ? `<tbody>${bodyRows.map(r => `<tr>${parseCells(r, 'td')}</tr>`).join('')}</tbody>`
         : '';
