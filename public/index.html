@@ -763,6 +763,7 @@ let settings  = {
 };
 let isStreaming   = false;
 let pendingFiles  = [];  // File objects staged for the next send
+let abortCtrl     = null;
 
 const STORAGE_CHATS    = 'chatbob_chats';
 const STORAGE_SETTINGS = 'chatbob_settings';
@@ -1218,10 +1219,12 @@ async function sendMessage(userText) {
 
   let assistantContent = '';
 
+  abortCtrl = new AbortController();
   try {
     const resp = await fetch('/api/chat', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal:  abortCtrl.signal,
       body: JSON.stringify({
         chatId,
         prompt:       userText,
@@ -1286,9 +1289,12 @@ async function sendMessage(userText) {
     }
 
   } catch (err) {
-    assistantContent = `❌ **Error:** ${err.message}\n\nCheck that Bob Shell is installed and signed in.`;
-    toast(`Error: ${err.message}`, 4000);
+    if (err.name !== 'AbortError') {
+      assistantContent = `❌ **Error:** ${err.message}\n\nCheck that Bob Shell is installed and signed in.`;
+      toast(`Error: ${err.message}`, 4000);
+    }
   } finally {
+    abortCtrl = null;
     contentEl.innerHTML = renderMarkdown(assistantContent || '_(no response)_');
     chat.messages.push({ role: 'assistant', content: assistantContent || '_(no response)_' });
     chat.title = inferTitle(chat.messages);
