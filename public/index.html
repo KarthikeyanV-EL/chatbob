@@ -829,9 +829,10 @@ function renderStreaming(el, text) {
 function renderMarkdown(text) {
   if (!text) return '';
 
-  // Fenced code blocks
+  // Fenced code blocks — replace \n inside code with &#10; so the paragraph
+  // builder (which splits on \n) never sees newlines inside a <pre> block
   text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    const escapedCode = escapeHtml(code.trimEnd());
+    const escapedCode = escapeHtml(code.trimEnd()).replace(/\n/g, '&#10;');
     const langLabel   = lang ? `<span style="color:var(--text-muted);font-size:11px;position:absolute;top:10px;left:14px;">${escapeHtml(lang)}</span>` : '';
     return `<pre>${langLabel}<button class="copy-btn" onclick="copyCode(this)">Copy</button><code>${escapedCode}</code></pre>`;
   });
