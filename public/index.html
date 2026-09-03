@@ -1180,6 +1180,14 @@ function scrollToBottom() {
   win.scrollTop = win.scrollHeight;
 }
 
+function scrollIfAtBottom() {
+  const win = document.getElementById('chat-window');
+  // Only auto-scroll if the user is within 100px of the bottom
+  if (win.scrollHeight - win.scrollTop - win.clientHeight < 100) {
+    win.scrollTop = win.scrollHeight;
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  Bob Shell status check
 // ────────────────────────────────────────────────────────────────────
@@ -1304,7 +1312,7 @@ async function sendMessage(userText) {
         if (token) {
           assistantContent += token;
           renderStreaming(contentEl, assistantContent);
-          scrollToBottom();
+          scrollIfAtBottom();
         }
       }
     }
@@ -1324,7 +1332,7 @@ async function sendMessage(userText) {
     renderSidebar();
     updateTopbarTitle();
     setStreaming(false);
-    scrollToBottom();
+    scrollIfAtBottom();
     refreshWorkspacePanel(chatId);
   }
 }
