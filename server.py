@@ -165,15 +165,22 @@ def run_bob_streaming(prompt: str, system_prompt: Optional[str], chat_id: Option
                     wfile.write(f'data: {payload}\n\n'.encode())
                     wfile.flush()
                 elif event.get('type') == 'result':
-                    new_task_id = event.get('stats', {}).get('task_id')
-                    print(f"[bob] status={event.get('status')}  task_id={new_task_id}")
-                    # Store the task ID and notify the frontend so subsequent turns resume the conversation
+                    stats       = event.get('stats', {})
+                    new_task_id = stats.get('task_id')
+                    print(f"[bob] status={event.get('status')}  task_id={new_task_id}  session_costs={stats.get('session_costs')}")
                     if new_task_id and chat_id:
                         with _store_lock:
                             _task_ids[chat_id] = new_task_id
-                        taskid_payload = json.dumps({'taskId': new_task_id})
                         try:
+                            # Notify frontend of task ID (for conversation continuity)
+                            taskid_payload = json.dumps({'taskId': new_task_id})
                             wfile.write(f'event: taskid\ndata: {taskid_payload}\n\n'.encode())
+                            # Forward cost stats so the UI can display coins used
+                            stats_payload = json.dumps({
+                                'sessionCosts': stats.get('session_costs', 0),
+                                'durationMs':   stats.get('duration_ms', 0),
+                            })
+                            wfile.write(f'event: stats\ndata: {stats_payload}\n\n'.encode())
                             wfile.flush()
                         except (BrokenPipeError, ConnectionResetError):
                             pass
