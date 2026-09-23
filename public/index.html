@@ -872,7 +872,8 @@ function renderMarkdown(text) {
   if (!text) return '';
 
   const placeholders = [];
-  const placeholderPrefix = `__CODE_BLOCK_${Date.now()}_`;
+  // Use unique token format that does not match markdown bold/italic/underscore regexes
+  const token = (idx) => `\x00CODEBLOCK${idx}\x00`;
 
   // Extract fenced code blocks
   text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
@@ -881,7 +882,7 @@ function renderMarkdown(text) {
     const html = `<pre>${langLabel}<button class="copy-btn" onclick="copyCode(this)">Copy</button><code>${escapedCode}</code></pre>`;
     const idx = placeholders.length;
     placeholders.push(html);
-    return `${placeholderPrefix}${idx}__`;
+    return token(idx);
   });
 
   // Extract inline code
@@ -889,7 +890,7 @@ function renderMarkdown(text) {
     const html = `<code>${escapeHtml(code)}</code>`;
     const idx = placeholders.length;
     placeholders.push(html);
-    return `${placeholderPrefix}${idx}__`;
+    return token(idx);
   });
 
   // Headers
@@ -902,7 +903,7 @@ function renderMarkdown(text) {
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
   text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
-  text = text.replace(/_(.+?)_/g, '<em>$1</em>');
+  text = text.replace(/\b_([^_]+?)_\b/g, '<em>$1</em>');
 
   // Blockquotes
   text = text.replace(/^>\s+(.+)$/gm, '<blockquote>$1</blockquote>');
@@ -974,8 +975,7 @@ function renderMarkdown(text) {
 
   // Restore placeholders
   for (let i = 0; i < placeholders.length; i++) {
-    const placeholder = `${placeholderPrefix}${i}__`;
-    result = result.replace(placeholder, placeholders[i]);
+    result = result.split(token(i)).join(placeholders[i]);
   }
 
   return result;
