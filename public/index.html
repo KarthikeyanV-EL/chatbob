@@ -848,23 +848,33 @@ function renderStreaming(el, text) {
 function renderMarkdown(text) {
   if (!text) return '';
 
-  // Fenced code blocks — replace \n inside code with &#10; so the paragraph
-  // builder (which splits on \n) never sees newlines inside a <pre> block
+  const placeholders = [];
+  const placeholderPrefix = `__CODE_BLOCK_${Date.now()}_`;
+
+  // Extract fenced code blocks
   text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
     const escapedCode = escapeHtml(code.trimEnd()).replace(/\n/g, '&#10;');
     const langLabel   = lang ? `<span style="color:var(--text-muted);font-size:11px;position:absolute;top:10px;left:14px;">${escapeHtml(lang)}</span>` : '';
-    return `<pre>${langLabel}<button class="copy-btn" onclick="copyCode(this)">Copy</button><code>${escapedCode}</code></pre>`;
+    const html = `<pre>${langLabel}<button class="copy-btn" onclick="copyCode(this)">Copy</button><code>${escapedCode}</code></pre>`;
+    const idx = placeholders.length;
+    placeholders.push(html);
+    return `${placeholderPrefix}${idx}__`;
   });
 
-  // Inline code
-  text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // Extract inline code
+  text = text.replace(/`([^`\n]+)`/g, (_, code) => {
+    const html = `<code>${escapeHtml(code)}</code>`;
+    const idx = placeholders.length;
+    placeholders.push(html);
+    return `${placeholderPrefix}${idx}__`;
+  });
 
   // Headers
   text = text.replace(/^#{3}\s+(.+)$/gm, '<h3>$1</h3>');
   text = text.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>');
   text = text.replace(/^#{1}\s+(.+)$/gm, '<h1>$1</h1>');
 
-  // Bold & italic
+  // Bold & italic (outside code blocks and inline code)
   text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
@@ -937,7 +947,15 @@ function renderMarkdown(text) {
     }
   }
   if (para.length) out.push(`<p>${para.join(' ')}</p>`);
-  return out.join('\n');
+  let result = out.join('\n');
+
+  // Restore placeholders
+  for (let i = 0; i < placeholders.length; i++) {
+    const placeholder = `${placeholderPrefix}${i}__`;
+    result = result.replace(placeholder, placeholders[i]);
+  }
+
+  return result;
 }
 
 function copyCode(btn) {
@@ -1013,11 +1031,30 @@ function renderFileChips() {
   });
 }
 
-function addFiles(fileList) {
+function addFiles(fileList, referenceInInput = false) {
+  const addedNames = [];
   for (const f of fileList) {
-    if (!pendingFiles.some(p => p.name === f.name)) pendingFiles.push(f);
+    if (!pendingFiles.some(p => p.name === f.name)) {
+      pendingFiles.push(f);
+      addedNames.push(f.name);
+    }
   }
   renderFileChips();
+
+  if (referenceInInput && addedNames.length > 0) {
+    const inp = document.getElementById('user-input');
+    const refs = addedNames.map(n => `@${n}`).join(' ');
+    const currentVal = inp.value;
+    if (!currentVal) {
+      inp.value = refs + ' ';
+    } else if (currentVal.endsWith(' ') || currentVal.endsWith('\n')) {
+      inp.value = currentVal + refs + ' ';
+    } else {
+      inp.value = currentVal + ' ' + refs + ' ';
+    }
+    autoResize(inp);
+    inp.focus();
+  }
 }
 
 async function uploadPendingFiles(chatId) {
@@ -1463,7 +1500,38 @@ function init() {
   document.getElementById('input-box').addEventListener('drop', (e) => {
     e.preventDefault();
     e.currentTarget.style.borderColor = '';
-    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files, true);
+  });
+
+  // Paste support: allow pasting image (or files) directly into textbox
+  document.getElementById('user-input').addEventListener('paste', (e) => {
+    const clipboardData = e.clipboardData || window.clipboardData;
+    if (!clipboardData) return;
+
+    const items = clipboardData.items;
+    if (!items) return;
+
+    const imageFiles = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.indexOf('image') !== -1) {
+        const file = item.getAsFile();
+        if (file) {
+          // If the file has a generic/default name like 'image.png', add a timestamp to make it distinct
+          let fileName = file.name;
+          if (!fileName || fileName === 'image.png') {
+            const ext = file.type.split('/')[1] || 'png';
+            fileName = `pasted_image_${Date.now()}.${ext}`;
+          }
+          const renamedFile = new File([file], fileName, { type: file.type });
+          imageFiles.push(renamedFile);
+        }
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      addFiles(imageFiles, true);
+    }
   });
 
   document.getElementById('btn-settings').addEventListener('click', openSettings);
