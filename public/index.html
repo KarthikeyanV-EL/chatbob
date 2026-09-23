@@ -419,27 +419,50 @@
     #file-chips {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 8px;
     }
     .file-chip {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       background: var(--bg2);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 3px 8px;
-      font-size: 11px;
-      color: var(--text-muted);
-      max-width: 200px;
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 12px;
+      color: var(--text);
+      max-width: 240px;
+    }
+    .file-chip-thumb {
+      width: 24px;
+      height: 24px;
+      object-fit: cover;
+      border-radius: 4px;
+      flex-shrink: 0;
     }
     .file-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-chip button {
       background: none; border: none; cursor: pointer;
-      color: var(--text-muted); padding: 0; line-height: 1;
+      color: var(--text-muted); padding: 0 2px; line-height: 1;
       font-size: 13px; flex-shrink: 0;
     }
     .file-chip button:hover { color: var(--danger); }
+
+    .msg-img-preview {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .msg-img-preview img {
+      max-width: 280px;
+      max-height: 200px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      object-fit: contain;
+      background: var(--bg2);
+      cursor: pointer;
+    }
     #input-box {
       width: 100%;
       background: var(--bg2);
@@ -1019,10 +1042,16 @@ function clearAllChats() {
 function renderFileChips() {
   const container = document.getElementById('file-chips');
   container.innerHTML = '';
-  pendingFiles.forEach((file, idx) => {
+  pendingFiles.forEach((item, idx) => {
+    const file = item.file || item;
     const chip = document.createElement('div');
     chip.className = 'file-chip';
-    chip.innerHTML = `<span title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span><button title="Remove">✕</button>`;
+    let thumbHtml = '';
+    if (item.previewUrl || (file.type && file.type.startsWith('image/'))) {
+      const src = item.previewUrl || URL.createObjectURL(file);
+      thumbHtml = `<img class="file-chip-thumb" src="${src}" alt="preview">`;
+    }
+    chip.innerHTML = `${thumbHtml}<span title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span><button title="Remove">✕</button>`;
     chip.querySelector('button').addEventListener('click', () => {
       pendingFiles.splice(idx, 1);
       renderFileChips();
@@ -1034,9 +1063,14 @@ function renderFileChips() {
 function addFiles(fileList, referenceInInput = false) {
   const addedNames = [];
   for (const f of fileList) {
-    if (!pendingFiles.some(p => p.name === f.name)) {
-      pendingFiles.push(f);
-      addedNames.push(f.name);
+    const fileObj = f.file || f;
+    if (!pendingFiles.some(p => (p.file ? p.file.name : p.name) === fileObj.name)) {
+      let previewUrl = null;
+      if (fileObj.type && fileObj.type.startsWith('image/')) {
+        previewUrl = URL.createObjectURL(fileObj);
+      }
+      pendingFiles.push({ file: fileObj, previewUrl });
+      addedNames.push(fileObj.name);
     }
   }
   renderFileChips();
@@ -1058,14 +1092,19 @@ function addFiles(fileList, referenceInInput = false) {
 }
 
 async function uploadPendingFiles(chatId) {
-  if (!pendingFiles.length) return;
+  if (!pendingFiles.length) return [];
+  const filesToUpload = [...pendingFiles];
   const form = new FormData();
   form.append('chatId', chatId);
-  pendingFiles.forEach(f => form.append('files', f));
+  filesToUpload.forEach(item => {
+    const f = item.file || item;
+    form.append('files', f, f.name);
+  });
   await fetch('/api/upload', { method: 'POST', body: form });
   pendingFiles = [];
   renderFileChips();
   refreshWorkspacePanel(chatId);
+  return filesToUpload;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1212,12 +1251,12 @@ function renderChatWindow() {
   welcome.classList.add('hidden');
 
   msgs.forEach(m => {
-    win.appendChild(buildMessageEl(m.role, m.content, false));
+    win.appendChild(buildMessageEl(m.role, m.content, false, m.attachments || []));
   });
   scrollToBottom();
 }
 
-function buildMessageEl(role, content, withCursor) {
+function buildMessageEl(role, content, withCursor, attachments = []) {
   const row   = document.createElement('div');
   row.className = `msg-row ${role}`;
 
@@ -1234,6 +1273,22 @@ function buildMessageEl(role, content, withCursor) {
   if (role === 'user') {
     // Plain text with newlines preserved
     msgContent.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+    if (attachments && attachments.length > 0) {
+      const imgContainer = document.createElement('div');
+      imgContainer.className = 'msg-img-preview';
+      attachments.forEach(att => {
+        if (att.url || (att.file && att.file.type.startsWith('image/'))) {
+          const img = document.createElement('img');
+          img.src = att.url || (att.previewUrl || URL.createObjectURL(att.file));
+          img.alt = att.name || (att.file ? att.file.name : 'image');
+          img.onclick = () => window.open(img.src, '_blank');
+          imgContainer.appendChild(img);
+        }
+      });
+      if (imgContainer.childNodes.length > 0) {
+        msgContent.appendChild(imgContainer);
+      }
+    }
   } else {
     msgContent.innerHTML = renderMarkdown(content);
     if (withCursor) msgContent.innerHTML += '<span class="cursor"></span>';
@@ -1293,23 +1348,33 @@ async function sendMessage(userText) {
   const chatId  = activeId;
   document.getElementById('welcome').classList.add('hidden');
 
+  let uploadedFiles = [];
   // Upload any staged files into the chat's workspace before sending
   if (pendingFiles.length) {
     try {
-      await uploadPendingFiles(chatId);
+      uploadedFiles = await uploadPendingFiles(chatId);
     } catch (e) {
       toast(`Upload failed: ${e.message}`, 4000);
       return;
     }
   }
 
-  chat.messages.push({ role: 'user', content: userText });
+  const fileAttachments = uploadedFiles.map(item => {
+    const f = item.file || item;
+    return {
+      name: f.name,
+      url: `/api/download?chatId=${encodeURIComponent(chatId)}&file=${encodeURIComponent(f.name)}`,
+      type: f.type || ''
+    };
+  });
+
+  chat.messages.push({ role: 'user', content: userText, attachments: fileAttachments });
   if (chat.messages.length === 1) chat.title = inferTitle(chat.messages);
   saveChats();
   renderSidebar();
 
   const chatWin = document.getElementById('chat-window');
-  chatWin.appendChild(buildMessageEl('user', userText, false));
+  chatWin.appendChild(buildMessageEl('user', userText, false, fileAttachments));
 
   const assistantRow = buildMessageEl('assistant', '', true);
   chatWin.appendChild(assistantRow);
